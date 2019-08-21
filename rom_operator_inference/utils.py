@@ -81,6 +81,26 @@ def kron_compact(x):
     return np.concatenate([x[i]*x[:i+1] for i in range(x.shape[0])], axis=0)
 
 
+def _kron_columnwise(X):
+    """Calculate the full Kronecker product x ⊗ x columnwise.
+
+    Parameters
+    ----------
+    x : (n,) or (n,k) ndarray
+
+    Returns
+    -------
+    x ⊗ x : (n**2,) or (n**2,k) ndarray
+        The full Kronecker product of x with itself.
+    """
+    if X.ndim == 1:
+        return np.kron(x,x)
+    elif X.ndim == 2:
+        return np.column_stack([np.kron(x,x) for x in X.T])
+    else:
+        raise ValueError("X must be one- or two- dimensional")
+
+
 def F2H(F):
     """Calculate the matricized quadratic operator that operates on the full
     Kronecker product.

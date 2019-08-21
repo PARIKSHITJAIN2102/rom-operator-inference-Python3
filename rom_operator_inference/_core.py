@@ -7,7 +7,221 @@ from scipy import linalg as la
 from scipy.integrate import solve_ivp, IntegrationWarning
 
 from . import utils
+kron_col = utils._khatri_rao
 kron2 = utils.kron_compact
+
+
+class _BaseReducedModel:
+    """Reduced order model for a system of high-dimensional ODEs of the form
+
+        dx / dt = f(t,x(t),u(t)),
+           x(0) = x0.
+
+    This is a base class that must be subclassed to become operational.
+
+    Attributes
+    ----------
+    n : int
+        The dimension of the original model.
+
+    r : int
+        The dimension of the learned reduced-order model.
+
+    Vr : (n,r) ndarray
+        The basis for the linear reduced space (e.g., POD basis matrix).
+
+    f_ : func(float, (r,) ndarray) -> (r,) ndarray
+        The complete ROM operator, which must be defined before calling
+        predict() (usually by fit()). Note the signiture is f_(t, x_); that
+        is, f_ maps time x reduced state to reduced state.
+
+    sol_ : Bunch object returned by scipy.integrate.solve_ivp(), the result
+        of integrating the learned ROM in predict(). For more details, see
+        https://docs.scipy.org/doc/scipy/reference/integrate.html.
+    """
+    def fit(self):
+        """Construct the reduced order model by saving the attributes that
+        define it: n, r, Vr, and f_().
+
+        Returns
+        -------
+        self
+        """
+        raise NotImplementedError("fit() must be overridden by subclass")
+
+    def predict(self, x0, t, **options):
+        """Simulate the learned ROM with scipy.integrate.solve_ivp().
+
+        Parameters
+        ----------
+        x0 : (n,) ndarray
+            The initial (high-dimensional) state vector to begin a simulation.
+
+        t : (nt,) ndarray
+            The time domain over which to integrate the reduced-order system.
+
+        options
+            Arguments for solver.integrate.solve_ivp(), such as the following:
+            method : str
+                The solver to use to solve the reduced-order system.
+                * 'RK45' (default): Explicit Runge-Kutta method of order 5(4).
+                * 'RK23': Explicit Runge-Kutta method of order 3(2).
+                * 'Radau': Implicit Runge-Kutta method of the Radau IIA family
+                    of order 5.
+                * 'BDF': Implicit multi-step variable-order (1 to 5) method
+                    based on a backward differentiation formula for the
+                    derivative.
+                * 'LSODA': Adams/BDF method with automatic stiffness detection
+                    and switching. This wraps the Fortran solver from ODEPACK.
+            max_step : float
+                The maximimum allowed integration step size.
+            See https://docs.scipy.org/doc/scipy/reference/integrate.html.
+
+        Returns
+        -------
+        X_ROM: (n,nt) ndarray
+            The reduced-order approximation to the full-order system over `t`.
+        """
+        # Check dimensions.
+        if x0.shape[0] != self.n:
+            raise ValueError("invalid initial state size "
+                             f"({x0.shape[0]} != {self.n})")
+        if t.ndim != 1:
+            raise ValueError("time 't' must be one-dimensional")
+
+        # Project initial conditions.
+        x0_ = self.Vr.T @ x0
+
+        # Integrate the reduced-order model.
+        self.sol_ = solve_ivp(self.f_,          # Integrate f_(t,x)
+                              [t[0], t[-1]],    # over this time interval
+                              x0_,              # with this initial condition
+                              t_eval=t,         # evaluated at these points
+                              **options)        # with these solver options.
+
+        # Raise errors if the integration failed.
+        if not self.sol_.success:               # pragma: no cover
+            raise IntegrationWarning(self.sol_.message)
+
+        # Reconstruct the approximation to the full-order model.
+        return self.Vr @ self.sol_.y
+
+
+class ProjectedReducedModel(_BaseReducedModel):
+    """Reduced order model for a system of high-dimensional ODEs of the form
+
+        dx / dt = Ax(t) + H(x ⊗ x)(t) + c
+           x(0) = x0.
+
+    Attributes
+    ----------
+    n : int
+        The dimension of the original model.
+
+    r : int
+        The dimension of the learned reduced-order model.
+
+    Vr : (n,r) ndarray
+        The basis for the linear reduced space (e.g., POD basis matrix).
+
+    A_ : (r,r) ndarray
+        The low-dimensional linear state matrix.
+
+    H_ : (r,r**2) ndarray
+        The low-dimensional quadratic state matrix.
+
+    f_ : func(float, (r,) ndarray) -> (r,) ndarray
+        The complete ROM operator, which must be defined before calling
+        predict() (usually by fit()). Note the signiture is f_(t, x_); that
+        is, f_ maps time x reduced state to reduced state.
+
+    sol_ : Bunch object returned by scipy.integrate.solve_ivp(), the result
+        of integrating the learned ROM in predict(). For more details, see
+        https://docs.scipy.org/doc/scipy/reference/integrate.html.
+    """
+    def fit(self, Vr, A, H):
+        """Construct the reduced order model by projecting the operators from
+        the high-dimensional space to a low-dimensional linear subspace.
+
+        Parameters
+        ----------
+        Vr : (n,r) ndarray
+            The basis for the linear reduced space (e.g., POD basis matrix).
+
+        A_ : (n,n) ndarray
+            The high-dimensional linear state matrix.
+
+        H_ : (n,n**2) ndarray
+            The high-dimensional quadratic state matrix.
+
+
+
+        Returns
+        -------
+        self
+        """
+        self.A_ = Vr.T @ A @ Vr
+        self.H_ = Vr.T @ H @ kron_col(Vr)
+        self.f_ = lambda t,x_: self.A_@x_ + self.H_@kron_col(x_)
+
+
+    def predict(self, x0, t, **options):
+        """Simulate the learned ROM with scipy.integrate.solve_ivp().
+
+        Parameters
+        ----------
+        x0 : (n,) ndarray
+            The initial (high-dimensional) state vector to begin a simulation.
+
+        t : (nt,) ndarray
+            The time domain over which to integrate the reduced-order system.
+
+        options
+            Arguments for solver.integrate.solve_ivp(), such as the following:
+            method : str
+                The solver to use to solve the reduced-order system.
+                * 'RK45' (default): Explicit Runge-Kutta method of order 5(4).
+                * 'RK23': Explicit Runge-Kutta method of order 3(2).
+                * 'Radau': Implicit Runge-Kutta method of the Radau IIA family
+                    of order 5.
+                * 'BDF': Implicit multi-step variable-order (1 to 5) method
+                    based on a backward differentiation formula for the
+                    derivative.
+                * 'LSODA': Adams/BDF method with automatic stiffness detection
+                    and switching. This wraps the Fortran solver from ODEPACK.
+            max_step : float
+                The maximimum allowed integration step size.
+            See https://docs.scipy.org/doc/scipy/reference/integrate.html.
+
+        Returns
+        -------
+        X_ROM: (n,nt) ndarray
+            The reduced-order approximation to the full-order system over `t`.
+        """
+        # Check dimensions.
+        if x0.shape[0] != self.n:
+            raise ValueError("invalid initial state size "
+                             f"({x0.shape[0]} != {self.n})")
+        if t.ndim != 1:
+            raise ValueError("time 't' must be one-dimensional")
+
+        # Project initial conditions.
+        x0_ = self.Vr.T @ x0
+
+        # Integrate the reduced-order model.
+        self.sol_ = solve_ivp(self.f_,          # Integrate f_(t,x)
+                              [t[0], t[-1]],    # over this time interval
+                              x0_,              # with this initial condition
+                              t_eval=t,         # evaluated at these points
+                              **options)        # with these solver options.
+
+        # Raise errors if the integration failed.
+        if not self.sol_.success:               # pragma: no cover
+            raise IntegrationWarning(self.sol_.message)
+
+        # Reconstruct the approximation to the full-order model.
+        return self.Vr @ self.sol_.y
+
 
 
 class ReducedModel:
@@ -226,10 +440,10 @@ class ReducedModel:
         x0 : (n,) ndarray
             The initial (high-dimensional) state vector to begin a simulation.
 
-        t : (T,) ndarray
+        t : (nt,) ndarray
             The time domain over which to integrate the reduced-order system.
 
-        u : callable OR (m,T) ndarray
+        u : callable OR (m,nt) ndarray
             The input as a function of time (preferred) OR the input at the
             times `t`. If given as an array, u(t) is calculated by linearly
             interpolating known data points if needed for an adaptive solver.
@@ -253,7 +467,7 @@ class ReducedModel:
 
         Returns
         -------
-        X_ROM: (n,T) ndarray
+        X_ROM: (n,nt) ndarray
             The reduced-order approximation to the full-order system over `t`.
         """
         # Check that the model is already trained.
@@ -267,7 +481,7 @@ class ReducedModel:
 
         if t.ndim != 1:
             raise ValueError("time 't' must be one-dimensional")
-        T = t.shape[0]
+        nt = t.shape[0]
 
         # Verify `u` matches model specifications.
         if not self.has_inputs and u is not None:
@@ -305,17 +519,17 @@ class ReducedModel:
                     if self.m == 1:
                         raise ValueError(message + " or scalar")
                     raise ValueError(message)
-            else:                   # Then u should an (m,T) array.
+            else:                   # Then u should an (m,nt) array.
                 U = np.atleast_2d(u.copy())
-                if U.shape != (self.m,T):
+                if U.shape != (self.m,nt):
                     raise ValueError("invalid input shape "
-                                     f"({U.shape} != {(self.m,T)}")
+                                     f"({U.shape} != {(self.m,nt)}")
                 def u(s):
                     """Interpolant for the discrete data U, aligned with t"""
                     k = np.searchsorted(t, s)
                     if k == 0:
                         return U[:,0]
-                    # elif k == T:          # This clause is never entered.
+                    # elif k == nt:         # This clause is never entered.
                     #     return U[:,-1]
                     return np.array([np.interp(s, t[k-1:k+1], U[i,k-1:k+1])
                                                 for i in range(self.m)])
