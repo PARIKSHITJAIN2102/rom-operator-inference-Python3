@@ -239,6 +239,8 @@ See [DETAILS.md](DETAILS.md) for more mathematical explanation.
 
 -  `utils.kron_compact(x)`: Compute the column-wise compact Kronecker product of `x`.
 
+- `utils.kron_columnwise(x, y)`: Compute the full Khatri-Rhao (column-wise) Kronecker product of `x` and `y`.
+
 -  `utils.F2H(F)`: Convert the compact matricized quadratic operator `F` to the full, symmetric, matricized quadratic operator `H`.
 
 

@@ -31,9 +31,11 @@ def lstsq_reg(A, b, G=0):
         The Tikhonov regularization matrix or matrices, in one of the
         following formats:
         * float > 0: G * I (a scaled identity matrix) is the regularization
-            matrix.
+          matrix.
         * (d,d) ndarray: G is the regularization matrix.
-        * list of r (d,d) ndarrays: the jth matrix in the list is the regularization matrix for the jth column of b. Only valid if b is two-dimensional.
+        * list of r (d,d) ndarrays: the jth matrix in the list is the
+          regularization matrix for the jth column of b. Only valid if b is
+          two-dimensional.
 
     Returns
     -------
@@ -95,14 +97,47 @@ def kron_compact(x):
 
     Parameters
     ----------
-    x : (n,) ndarray
+    x : (n,) or (n,k) ndarray
+        If two-dimensional, the product is computed columnwise (Khatri-Rao).
 
     Returns
     -------
-    x ⊗ x : (n(n+1)/2,) ndarray
+    x ⊗ x : (n(n+1)/2,) or (n(n+1)/2,k) ndarray
         The "compact" Kronecker product of x with itself.
     """
+    if x.ndim not in (1,2):
+        raise ValueError("x must be one- or two-dimensional")
     return _np.concatenate([x[i]*x[:i+1] for i in range(x.shape[0])], axis=0)
+
+
+def kron_columnwise(x,y):
+    """Calculate the full Khatri-Rao (columnwise Kronecker) product x ⊗ y.
+
+    Parameters
+    ----------
+    x : (n,) or (n,k) ndarray
+        If two-dimensional, the product is computed columnwise (Khatri-Rao).
+
+    y : (m,) or (m,k) ndarray
+        Must have the same number of dimensions as x. If two-dimensional, must
+        have the same number of columns as x.
+
+    Returns
+    -------
+    x ⊗ y : (nm,) or (nm,kj) ndarray
+        The full Kronecker product of x and y, by column if two-dimensional.
+    """
+    if x.ndim != y.ndim:
+        raise ValueError("x and y must have the same number of dimensions")
+    if x.ndim == 1:
+        return _np.kron(x,y)
+    elif x.ndim == 2:
+        if x.shape[1] != y.shape[1]:
+            raise ValueError("x and y must have the same number of columns")
+        return _np.column_stack([_np.kron(xcol,ycol)
+                                 for xcol,ycol in zip(x.T, y.T)])
+    else:
+        raise ValueError("x and y must be one- or two-dimensional")
 
 
 def F2H(F):
